@@ -1,0 +1,549 @@
+{
+  "apiVersion": "v1",
+  "kind": "Template",
+  "metadata": {
+    "name": "sonarqube",
+    "annotations": {
+      "description": "SonarQube\n\n SonarQube requires that the serviceaccount for the main SonarQube app be added to the anyuid security context. The service account name is: <application name>-user",
+      "tags": "instant-app,sonarqube,VCS"
+    }
+  },
+  "message": "Login to SonarQube with the default admin user: admin/admin",
+  "labels": {
+    "createdBy": "sonarqube-template"
+  },
+  "parameters": [
+    {
+      "name": "APPLICATION_NAME",
+      "displayName": "Application name.",
+      "description": "The name for the application. The service will be named like the application.",
+      "required": true,
+      "value": "sonarqube"
+    },
+    {
+      "name": "APPLICATION_HOSTNAME",
+      "displayName": "SonarQube instance hostname",
+      "description": "Hostname for service routes. Set this in order to have the SonarQube display the correct clone urls.",
+      "required": true,
+      "generate": "expression",
+      "from": "[a-z]{8}.amp.arq.interacciones.local"
+    },
+    {
+      "name": "POSTGRESQL_USER",
+      "displayName": "PostgreSQL Connection Username",
+      "description": "Username for PostgreSQL user that will be used for accessing the database.",
+      "required": true,
+      "generate": "expression",
+      "from": "user[A-Z0-9]{3}"
+    },
+    {
+      "name": "POSTGRESQL_PASSWORD",
+      "displayName": "PostgreSQL Connection Password",
+      "description": "Password for the PostgreSQL connection user.",
+      "required": true,
+      "generate": "expression",
+      "from": "[a-zA-Z0-9]{16}"
+    },
+    {
+      "name": "POSTGRESQL_ADMIN_PASSWORD",
+      "displayName": "PostgreSQL Admin User Password",
+      "description": "Password for the PostgreSQL Admin user.",
+      "required": true,
+      "generate": "expression",
+      "from": "[a-zA-Z0-9]{16}"
+    },
+    {
+      "name": "POSTGRESQL_DATABASE",
+      "displayName": "PostgreSQL Database Name",
+      "description": "Name of the PostgreSQL database accessed.",
+      "required": true,
+      "value": "sonar"
+    },
+    {
+      "name": "POSTGRESQL_VOL_SIZE",
+      "displayName": "PostgreSQL volume size",
+      "description": "Volume size for PostgreSQL data",
+      "required": true,
+      "value": "5Gi"
+    },
+    {
+      "name": "SONARQUBE_VERSION",
+      "displayName": "SonarQube version",
+      "required": true,
+      "value": "6.7"
+    },
+    {
+      "name": "SONARQUBE_VOL_SIZE",
+      "displayName": "SonarQube volume size",
+      "description": "Volume size for SonarQube data",
+      "required": true,
+      "value": "5Gi"
+    }
+  ],
+  "objects": [
+    {
+      "apiVersion": "v1",
+      "kind": "ServiceAccount",
+      "metadata": {
+        "name": "${APPLICATION_NAME}-user"
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Secret",
+      "metadata": {
+        "name": "${APPLICATION_NAME}-postgresql"
+      },
+      "stringData": {
+        "database-user": "${POSTGRESQL_USER}",
+        "database-password": "${POSTGRESQL_PASSWORD}",
+        "database-admin-password": "${POSTGRESQL_ADMIN_PASSWORD}"
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ImageStream",
+      "metadata": {
+        "name": "${APPLICATION_NAME}",
+        "labels": {
+          "app": "${APPLICATION_NAME}"
+        }
+      },
+      "spec": {
+        "tags": [
+          {
+            "from": {
+              "kind": "DockerImage",
+              "name": "openshiftdemos/sonarqube:${SONARQUBE_VERSION}"
+            },
+            "importPolicy": {},
+            "name": "${SONARQUBE_VERSION}"
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "DeploymentConfig",
+      "metadata": {
+        "name": "${APPLICATION_NAME}-postgresql",
+        "labels": {
+          "app": "${APPLICATION_NAME}",
+          "deploymentconfig": "${APPLICATION_NAME}-postgresql"
+        }
+      },
+      "spec": {
+        "strategy": {
+          "type": "Recreate",
+          "recreateParams": {
+            "post": {
+              "failurePolicy": "Abort",
+              "execNewPod": {
+                "containerName": "sonarqube-postgresql",
+                "command": [
+                  "/usr/bin/scl",
+                  "enable",
+                  "rh-postgresql94",
+                  "export PGPASSWORD='${POSTGRESQL_ADMIN_PASSWORD}'; psql -h '${APPLICATION_NAME}-postgresql' -U postgres -d ${POSTGRESQL_DATABASE} -c 'CREATE EXTENSION IF NOT EXISTS pg_trgm;'"
+                ],
+                "env": [
+                  {
+                    "name": "HOME",
+                    "value": "/var/lib/pgsql"
+                  },
+                  {
+                    "name": "PGDATA",
+                    "value": "/var/lib/pgsql/data/userdata"
+                  },
+                  {
+                    "name": "CONTAINER_SCRIPTS_PATH",
+                    "value": "/usr/share/container-scripts/postgresql"
+                  }
+                ]
+              }
+            }
+          },
+          "resources": {}
+        },
+        "triggers": [
+          {
+            "type": "ConfigChange"
+          },
+          {
+            "type": "ImageChange",
+            "imageChangeParams": {
+              "automatic": true,
+              "containerNames": [
+                "${APPLICATION_NAME}-postgresql"
+              ],
+              "from": {
+                "kind": "ImageStreamTag",
+                "name": "postgresql:9.4",
+                "namespace": "openshift"
+              }
+            }
+          }
+        ],
+        "replicas": 1,
+        "test": false,
+        "selector": {
+          "app": "${APPLICATION_NAME}",
+          "deploymentconfig": "${APPLICATION_NAME}-postgresql"
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "${APPLICATION_NAME}",
+              "deploymentconfig": "${APPLICATION_NAME}-postgresql"
+            }
+          },
+          "spec": {
+            "volumes": [
+              {
+                "name": "sonarqube-volume-postgresql",
+                "persistentVolumeClaim": {
+                  "claimName": "${APPLICATION_NAME}-postgresql"
+                }
+              }
+            ],
+            "containers": [
+              {
+                "name": "sonarqube-postgresql",
+                "image": "sonarqube-postgresql",
+                "ports": [
+                  {
+                    "containerPort": 5432,
+                    "protocol": "TCP"
+                  }
+                ],
+                "readinessProbe": {
+                  "timeoutSeconds": 1,
+                  "initialDelaySeconds": 5,
+                  "exec": {
+                    "command": [
+                      "/bin/sh",
+                      "-i",
+                      "-c",
+                      "psql -h 127.0.0.1 -U $POSTGRESQL_USER -q -d $POSTGRESQL_DATABASE -c 'SELECT 1'"
+                    ]
+                  }
+                },
+                "livenessProbe": {
+                  "timeoutSeconds": 1,
+                  "initialDelaySeconds": 30,
+                  "tcpSocket": {
+                    "port": 5432
+                  }
+                },
+                "env": [
+                  {
+                    "name": "POSTGRESQL_USER",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "name": "${APPLICATION_NAME}-postgresql",
+                        "key": "database-user"
+                      }
+                    }
+                  },
+                  {
+                    "name": "POSTGRESQL_PASSWORD",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "name": "${APPLICATION_NAME}-postgresql",
+                        "key": "database-password"
+                      }
+                    }
+                  },
+                  {
+                    "name": "POSTGRESQL_DATABASE",
+                    "value": "${POSTGRESQL_DATABASE}"
+                  },
+                  {
+                    "name": "POSTGRESQL_ADMIN_PASSWORD",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "name": "${APPLICATION_NAME}-postgresql",
+                        "key": "database-admin-password"
+                      }
+                    }
+                  }
+                ],
+                "resources": {},
+                "volumeMounts": [
+                  {
+                    "name": "sonarqube-volume-postgresql",
+                    "mountPath": "/var/lib/pgsql/data"
+                  }
+                ],
+                "terminationMessagePath": "/dev/termination-log",
+                "imagePullPolicy": "IfNotPresent"
+              }
+            ],
+            "restartPolicy": "Always",
+            "terminationGracePeriodSeconds": 30,
+            "dnsPolicy": "ClusterFirst"
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "${APPLICATION_NAME}-postgresql",
+        "labels": {
+          "app": "${APPLICATION_NAME}"
+        }
+      },
+      "spec": {
+        "ports": [
+          {
+            "name": "5432-tcp-postgresql",
+            "protocol": "TCP",
+            "port": 5432,
+            "targetPort": 5432,
+            "nodePort": 0
+          }
+        ],
+        "selector": {
+          "app": "${APPLICATION_NAME}",
+          "deploymentconfig": "${APPLICATION_NAME}-postgresql"
+        },
+        "type": "ClusterIP",
+        "sessionAffinity": "None"
+      },
+      "status": {
+        "loadBalancer": {}
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "DeploymentConfig",
+      "metadata": {
+        "name": "${APPLICATION_NAME}",
+        "labels": {
+          "app": "${APPLICATION_NAME}",
+          "deploymentconfig": "${APPLICATION_NAME}"
+        }
+      },
+      "spec": {
+        "strategy": {
+          "type": "Rolling",
+          "rollingParams": {
+            "intervalSeconds": 1,
+            "maxSurge": "25%",
+            "maxUnavailable": "25%",
+            "timeoutSeconds": 600,
+            "updatePeriodSeconds": 1
+          },
+          "resources": {}
+        },
+        "triggers": [
+          {
+            "type": "ConfigChange"
+          },
+          {
+            "type": "ImageChange",
+            "imageChangeParams": {
+              "automatic": true,
+              "containerNames": [
+                "${APPLICATION_NAME}"
+              ],
+              "from": {
+                "kind": "ImageStreamTag",
+                "name": "sonarqube:${SONARQUBE_VERSION}"
+              }
+            }
+          }
+        ],
+        "replicas": 1,
+        "test": false,
+        "selector": {
+          "app": "${APPLICATION_NAME}",
+          "deploymentconfig": "${APPLICATION_NAME}"
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "${APPLICATION_NAME}",
+              "deploymentconfig": "${APPLICATION_NAME}"
+            },
+            "annotations": {
+              "openshift.io/container.sonarqube.image.entrypoint": "[\"./bin/run.sh\"]"
+            }
+          },
+          "spec": {
+            "volumes": [
+              {
+                "name": "sonarqube-volume-data",
+                "persistentVolumeClaim": {
+                  "claimName": "${APPLICATION_NAME}-data"
+                }
+              }
+            ],
+            "containers": [
+              {
+                "name": "sonarqube",
+                "image": " ",
+                "ports": [
+                  {
+                    "containerPort": 9000,
+                    "protocol": "TCP"
+                  }
+                ],
+                "readinessProbe": {
+                  "timeoutSeconds": 5,
+                  "initialDelaySeconds": 60,
+                  "failureThreshold": 3,
+                  "periodSeconds": 20,
+                  "successThreshold": 1,
+                  "httpGet": {
+                    "port": 9000,
+                    "path": "/"
+                  }
+                },
+                "livenessProbe": {
+                  "timeoutSeconds": 5,
+                  "initialDelaySeconds": 60,
+                  "failureThreshold": 3,
+                  "periodSeconds": 20,
+                  "successThreshold": 1,
+                  "httpGet": {
+                    "port": 9000,
+                    "path": "/"
+                  }
+                },
+                "env": [
+                  {
+                    "name": "SONARQUBE_JDBC_USERNAME",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "name": "${APPLICATION_NAME}-postgresql",
+                        "key": "database-user"
+                      }
+                    }
+                  },
+                  {
+                    "name": "SONARQUBE_JDBC_PASSWORD",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "name": "${APPLICATION_NAME}-postgresql",
+                        "key": "database-password"
+                      }
+                    }
+                  },
+                  {
+                    "name": "SONARQUBE_JDBC_URL",
+                    "value": "jdbc:postgresql://${APPLICATION_NAME}-postgresql/${POSTGRESQL_DATABASE}"
+                  }
+                ],
+                "resources": {},
+                "volumeMounts": [
+                  {
+                    "name": "sonarqube-volume-data",
+                    "mountPath": "/opt/sonarqube/data"
+                  }
+                ],
+                "terminationMessagePath": "/dev/termination-log",
+                "imagePullPolicy": "IfNotPresent"
+              }
+            ],
+            "restartPolicy": "Always",
+            "terminationGracePeriodSeconds": 30,
+            "dnsPolicy": "ClusterFirst",
+            "securityContext": {}
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "${APPLICATION_NAME}",
+        "labels": {
+          "app": "${APPLICATION_NAME}"
+        }
+      },
+      "spec": {
+        "ports": [
+          {
+            "name": "9000-tcp-sonarqube",
+            "protocol": "TCP",
+            "port": 9000,
+            "targetPort": 9000,
+            "nodePort": 0
+          }
+        ],
+        "selector": {
+          "app": "${APPLICATION_NAME}",
+          "deploymentconfig": "${APPLICATION_NAME}"
+        },
+        "type": "ClusterIP",
+        "sessionAffinity": "None"
+      },
+      "status": {
+        "loadBalancer": {}
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "PersistentVolumeClaim",
+      "metadata": {
+        "name": "${APPLICATION_NAME}-postgresql"
+      },
+      "spec": {
+        "accessModes": [
+          "ReadWriteOnce"
+        ],
+        "resources": {
+          "requests": {
+            "storage": "${POSTGRESQL_VOL_SIZE}"
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "PersistentVolumeClaim",
+      "metadata": {
+        "name": "${APPLICATION_NAME}-data"
+      },
+      "spec": {
+        "accessModes": [
+          "ReadWriteOnce"
+        ],
+        "resources": {
+          "requests": {
+            "storage": "${SONARQUBE_VOL_SIZE}"
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Route",
+      "metadata": {
+        "name": "${APPLICATION_NAME}",
+        "labels": {
+          "app": "${APPLICATION_NAME}"
+        },
+        "annotations": {
+          "openshift.io/host.generated": "true"
+        }
+      },
+      "spec": {
+        "host": "${APPLICATION_HOSTNAME}",
+        "to": {
+          "kind": "Service",
+          "name": "${APPLICATION_NAME}",
+          "weight": 100
+        },
+        "port": {
+          "targetPort": "9000-tcp-sonarqube"
+        },
+        "wildcardPolicy": "None"
+      }
+    }
+  ]
+}
